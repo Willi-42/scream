@@ -51,6 +51,11 @@ bool isKeyFrame = false;
 bool disablePacing = false;
 float keyFrameInterval = 0.0;
 float keyFrameSize = 1.0;
+char* traceFile = (char*)"./traces/trace_no_key.txt";
+float traceFrameSize[10000];
+int traceNFrames = 0;
+int traceFrameIx = 0;
+float traceNominalBitrate = 0.0f;
 int initRate = 1000;
 int minRate = 1000;
 int maxRate = 500000;
@@ -153,6 +158,63 @@ return us;
 
 void packet_free(void* buf, uint32_t ssrc) {
 	free(buf);
+}
+
+bool loadTraceFile() {
+	FILE* fp = fopen(traceFile, "r");
+	char resolvedPath[4096];
+	if (!fp) {
+		char executablePath[4096];
+		ssize_t length = readlink("/proc/self/exe", executablePath, sizeof(executablePath) - 1);
+		if (length > 0) {
+			executablePath[length] = '\0';
+			char* lastSlash = strrchr(executablePath, '/');
+			if (lastSlash) {
+				*lastSlash = '\0';
+				snprintf(resolvedPath, sizeof(resolvedPath),
+					"%s/../traces/%s", executablePath,
+					traceFile && strrchr(traceFile, '/') ? strrchr(traceFile, '/') + 1 : "trace_no_key.txt");
+				fp = fopen(resolvedPath, "r");
+				if (fp)
+					traceFile = resolvedPath;
+			}
+		}
+	}
+	if (!fp) {
+		cerr << "Cannot open trace file: " << traceFile << endl;
+		return false;
+	}
+
+	char line[100];
+	float sum = 0.0f;
+	traceNFrames = 0;
+	while (fgets(line, 99, fp) && traceNFrames < 10000) {
+		float frameSize = atof(line);
+		if (frameSize > 0.0f) {
+			traceFrameSize[traceNFrames++] = frameSize;
+			sum += frameSize;
+		}
+	}
+	fclose(fp);
+
+	if (traceNFrames == 0) {
+		cerr << "Trace file contains no frame sizes: " << traceFile << endl;
+		return false;
+	}
+	float duration = traceNFrames / FPS;
+	traceNominalBitrate = sum * 8.0f / duration;
+	traceFrameIx = 0;
+	cerr << "Loaded trace " << traceFile << " (" << traceNFrames
+	     << " frames at " << FPS << " fps)" << endl;
+	return true;
+}
+
+int getTraceFrameSize(float targetBitrate) {
+	float frameSize = traceFrameSize[traceFrameIx];
+	traceFrameIx++;
+	if (traceFrameIx == traceNFrames)
+		traceFrameIx = 0;
+	return (int)(frameSize / traceNominalBitrate * targetBitrate);
 }
 
 uint32_t getTimeInNtp() {
@@ -380,7 +442,13 @@ void* createRtpThread(void* arg) {
 		screamTx->setCwndMin(mtu+12);
 
 		float randVal = float(rand()) / RAND_MAX - 0.5;
-		int bytes = (int)(rateTx / FPS / 8 * (1.0 + randVal * randRate));
+		int bytes;
+		if (traceFile && traceNFrames > 0) {
+			bytes = getTraceFrameSize(rateTx);
+		}
+		else {
+			bytes = (int)(rateTx / FPS / 8 * (1.0 + randVal * randRate));
+		}
 
 		if (isKeyFrame && time_ntp - lastKeyFrameT_ntp >= keyFrameInterval_ntp) {
 			/*
@@ -698,6 +766,9 @@ int main(int argc, char* argv[]) {
 		cerr << "                               example -key 2.0 5.0 " << endl;
 		cerr << "     -rand val                Framesizes vary randomly around the nominal " << endl;
 		cerr << "                               example -rand 10 framesize vary +/- 10% " << endl;
+		cerr << "     -trace file              Use a VideoEnc frame-size trace file " << endl;
+		cerr << "                               default: ./traces/trace_no_key.txt " << endl;
+		cerr << "     -notrace                 Disable trace-based frame generation " << endl;
 		cerr << "     -initrate val            Set a start bitrate [kbps]" << endl;
 		cerr << "                               example -initrate 2000 " << endl;
 		cerr << "     -minrate  val            Set a min bitrate [kbps], default 1000kbps" << endl;
@@ -743,6 +814,14 @@ int main(int argc, char* argv[]) {
 	bool verbose = false;
 	char* logFile = 0;
 	char* txRxLogFile = 0;
+	for (int argIx = 1; argIx < argc; argIx++) {
+		if (strcmp(argv[argIx], "-trace") == 0 && argIx + 1 < argc) {
+			traceFile = argv[argIx + 1];
+		}
+		if (strcmp(argv[argIx], "-notrace") == 0) {
+			traceFile = 0;
+		}
+	}
 	/* First find options */
 	while (strstr(argv[ix], "-")) {
 		if (strstr(argv[ix], "-ect")) {
@@ -863,6 +942,16 @@ int main(int argc, char* argv[]) {
 		if (strstr(argv[ix], "-fps")) {
 			FPS = atof(argv[ix + 1]);
 			ix += 2;
+			continue;
+		}
+		if (strstr(argv[ix], "-trace")) {
+			traceFile = argv[ix + 1];
+			ix += 2;
+			continue;
+		}
+		if (strstr(argv[ix], "-notrace")) {
+			traceFile = 0;
+			ix++;
 			continue;
 		}
 		if (strstr(argv[ix], "-rand")) {
@@ -1016,6 +1105,9 @@ int main(int argc, char* argv[]) {
 		initRate = minRate;
 	DECODER_IP = argv[ix];ix++;
 	DECODER_PORT = atoi(argv[ix]);ix++;
+
+	if (traceFile && !loadTraceFile())
+		return -1;
 
 	if (setup() == 0)
 		return 0;
