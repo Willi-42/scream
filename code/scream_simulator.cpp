@@ -9,6 +9,7 @@
 #include "NetQueue.h"
 #include "OooQueue.h"
 #include "ScreamRx.h"
+#include <cstring>
 
 using namespace std;
 
@@ -19,10 +20,11 @@ const char* log_tag = "scream_lib";
 const char* log_tag = "";
 #endif
 
-const float Tmax = 20;
+const float Tmax = 100;
 const bool isChRate = true;
 const bool printLog = false;
-const bool ecnCapable = true;
+
+const bool ecnCapable = false;
 const bool isL4s = true && ecnCapable;
 const float FR = 50.0f; // Frame rate for stream 0
 const int FR_DIV = 1;   // Divisor for framerate for streams 1...N
@@ -40,6 +42,8 @@ int swprio = -1;
 const int mode = 0x1;// 0x0F;
 
 const float RTT = 0.025f;
+const float FORWARD_DELAY = RTT; // / 2.0f;
+const float RETURN_DELAY = RTT; // / 2.0f;
 
 //int mssList[5] = { 300, 500, 800, 1000, 1300 };
 //int nMssListItems = 5;
@@ -71,7 +75,8 @@ int main(int argc, char* argv[])
 	RtpQueue* rtpQueue[4] = { new RtpQueue(), new RtpQueue(), new RtpQueue() , new RtpQueue() };
 
 	VideoEnc* videoEnc[4] = { 0, 0, 0, 0 };
-	NetQueue* netQueueDelay = new NetQueue(RTT, 0.0f, 0.0f);
+	NetQueue* netQueueDelay = new NetQueue(FORWARD_DELAY, 0.0f, 0.0f);
+	NetQueue* netQueueFeedbackDelay = new NetQueue(RETURN_DELAY, 0.0f, 0.0f);
 	NetQueue* netQueueRate = new NetQueue(0.0f, 10e6, 0.0f, true && isL4s);
 	OooQueue* oooQueue = new OooQueue(0.0f);
 	videoEnc[0] = new VideoEnc(rtpQueue[0], FR, (char*)TRACEFILE, 0, 0.0);
@@ -230,20 +235,38 @@ int main(int argc, char* argv[])
 		unsigned char buf[2000];
 		int fb_size = -1;
 		if (true) {
+			void* feedbackPacket = 0;
+			unsigned int feedbackSsrc = 0;
+			unsigned short feedbackSeqNr = 0;
+			unsigned int feedbackTimeStamp = 0;
+			bool feedbackIsCe = false;
+			bool feedbackIsMark = false;
+			int feedbackSize = 0;
+			while (netQueueFeedbackDelay->extract(time, feedbackPacket, feedbackSsrc, feedbackSize,
+				feedbackSeqNr, feedbackIsCe, feedbackIsMark, feedbackTimeStamp)) {
+				unsigned char* queuedFeedback = (unsigned char*)netQueueFeedbackDelay->getLastExtractedPacket();
+				screamTx->incomingStandardizedFeedback(time_ntp, queuedFeedback, feedbackSize);
+				delete[] queuedFeedback;
+				retVal = screamTx->isOkToTransmit(time_ntp, ssrc);
+				isEvent = true;
+			}
+
 			bool isFeedback = screamRx->isFeedback(time_ntp_rx) &&
 				(time_ntp_rx - screamRx->getLastFeedbackT() > screamRx->getRtcpFbInterval() || screamRx->checkIfFlushAck());
 
 			if (isFeedback && screamRx->createStandardizedFeedback(time_ntp_rx, false, buf, fb_size)) {
-				screamTx->incomingStandardizedFeedback(time_ntp, buf, fb_size);
+				unsigned char* queuedFeedback = new unsigned char[fb_size];
+				memcpy(queuedFeedback, buf, fb_size);
+				netQueueFeedbackDelay->insert(time, queuedFeedback, 0, fb_size, 0, false, false, 0);
 				while (screamRx->isOooDetected()) {
 					/*
 					* OOO RTP detected, additional "transmission" of RTCP
 					*/
 					screamRx->createStandardizedFeedbackOoo(time_ntp_rx, false, buf, fb_size);
-					screamTx->incomingStandardizedFeedback(time_ntp, buf, fb_size);
+					unsigned char* queuedFeedbackOoo = new unsigned char[fb_size];
+					memcpy(queuedFeedbackOoo, buf, fb_size);
+					netQueueFeedbackDelay->insert(time, queuedFeedbackOoo, 0, fb_size, 0, false, false, 0);
 				}
-				retVal = screamTx->isOkToTransmit(time_ntp, ssrc);
-				isEvent = true;
 			}
 		}
 
@@ -304,29 +327,29 @@ int main(int argc, char* argv[])
 
 
 
-		if (isChRate) {
-			if ((time > 3.0 && time < 6) && isChRate) {
-				netQueueRate->rate = 5000e3;
-			}
-			else {
-				netQueueRate->rate = 10000e3;
-			}
-		}
+		// if (isChRate) {
+		// 	if ((time > 3.0 && time < 6) && isChRate) {
+		// 		netQueueRate->rate = 5000e3;
+		// 	}
+		// 	else {
+		// 		netQueueRate->rate = 10000e3;
+		// 	}
+		// }
 
 
 
 
 
-		if (time > 20 && swprio == 0) {
-			swprio = 1;
-			screamTx->setTargetPriority(10, 0.2);
-			screamTx->setTargetPriority(11, 1.0);
-		}
-		if (time > 25 && swprio == 1) {
-			swprio = 2;
-			screamTx->setTargetPriority(10, 1.0);
-			screamTx->setTargetPriority(11, 0.2);
-		}
+		// if (time > 20 && swprio == 0) {
+		// 	swprio = 1;
+		// 	screamTx->setTargetPriority(10, 0.2);
+		// 	screamTx->setTargetPriority(11, 1.0);
+		// }
+		// if (time > 25 && swprio == 1) {
+		// 	swprio = 2;
+		// 	screamTx->setTargetPriority(10, 1.0);
+		// 	screamTx->setTargetPriority(11, 0.2);
+		// }
 
 
 		n++;
@@ -340,4 +363,3 @@ int main(int argc, char* argv[])
     fclose(fp);
 	return 0;
 }
-

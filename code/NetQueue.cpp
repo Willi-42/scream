@@ -43,6 +43,7 @@ NetQueue::NetQueue(float delay_, float rate_, float jitter_, bool isL4s_) {
 	tQueueAvg = 0.0;
 	bytes = 0.0;
 	tLastAddBytes = 0.0;
+	lastExtractedPacket = 0;
 
 }
 
@@ -143,6 +144,7 @@ bool NetQueue::extract(float time,
 			}
 
 			items[tail]->used = false;
+			lastExtractedPacket = items[tail]->packet;
 
 			bytesTx += size;
 			tail++; if (tail == NetQueueSize) tail = 0;
@@ -179,6 +181,10 @@ bool NetQueue::canExtract() {
 		bytes = 0.0;
 		return false;
 	}
+}
+
+void* NetQueue::getLastExtractedPacket() {
+	return lastExtractedPacket;
 }
 
 int NetQueue::sizeOfQueue() {

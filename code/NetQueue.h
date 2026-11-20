@@ -46,6 +46,7 @@ public:
     void addBytes(float time);
 
     bool canExtract();
+    void* getLastExtractedPacket();
 
     NetQueueItem *items[NetQueueSize];
     int head; // Pointer to last inserted item
@@ -65,6 +66,7 @@ public:
 	float tQueueAvg;
     float bytes;
     float tLastAddBytes;
+    void* lastExtractedPacket;
 };
 
 #endif
